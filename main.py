@@ -86,7 +86,7 @@ def main():
                                     (nn.Conv2d, InputQuantizedWrapper, {"bits": args.bits}),
                                      (nn.LayerNorm, InputQuantizedWrapper, {"bits": args.bits})])
             replaced = find_quantized_layers(model, QuantizedLinear)
-            replaced = replaced + find_quantized_layers(model, InputQuantizedWrapper)
+            replaced.update(find_quantized_layers(model, InputQuantizedWrapper))
             print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     print(model)
 
