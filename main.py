@@ -71,8 +71,8 @@ def main():
     else:
         print(f"Quantizing nn.Linear layers to {args.bits}-bit...")
         quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}), 
-                                (nn.Conv2d, QuantizedLinear, {"bits": args.bits}),
-                                 (nn.LayerNorm, QuantizedLinear, {"bits": args.bits})])
+                                (nn.Conv2d, InputQuantizedWrapper, {"bits": args.bits}),
+                                 (nn.LayerNorm, InputQuantizedWrapper, {"bits": args.bits})])
         replaced = find_quantized_layers(model, QuantizedLinear)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     print(model)
