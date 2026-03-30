@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, find_quantized_layers
+from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers
 
 BATCH_SIZE = 64
 NUM_WORKERS = 4
