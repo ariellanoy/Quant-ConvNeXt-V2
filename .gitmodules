@@ -1,0 +1,3 @@
+[submodule "external/convnextv2"]
+	path = external/convnextv2
+	url = https://github.com/facebookresearch/ConvNeXt-V2.git
