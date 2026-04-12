@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers
+from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers,  GPTQLinear
 
 BATCH_SIZE = 64
 NUM_WORKERS = 4
@@ -61,7 +61,19 @@ def main():
         "--quant-type",
         type=str,
         default="linear",
-        help="Type of quantization to run \n(options: linear / all)\n(default: linear)",
+        help=(
+            "Type of quantization to run\n"
+            "  linear     – symmetric per-channel weight + per-token activation (nn.Linear only)\n"
+            "  all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
+            "  gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
+            "(default: linear)"
+        ),
+    )
+    parser.add_argument(
+        "--gptq-calib-batches",
+        type=int,
+        default=64,
+        help="Number of calibration batches for GPTQ Hessian estimation (default: 64)",
     )
     args = parser.parse_args()
 
@@ -72,23 +84,6 @@ def main():
     model = load_pretrained_vit(args.model, pretrained=True)
     model = model.to(device)
 
-    if args.no_quantize:
-        print("Skipping quantization (baseline full precision)")
-    else:
-        if args.quant_type == "linear":
-            print(f"Quantizing nn.Linear layers to {args.bits}-bit...")
-            quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits})])
-            replaced = find_quantized_layers(model, QuantizedLinear)
-            print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
-        elif args.quant_type == "all":
-            print(f"Quantizing nn.Linear, nn.Conv2d, nn.LayerNorm layers to {args.bits}-bit...")
-            quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}), 
-                                    (nn.Conv2d, InputQuantizedWrapper, {"bits": args.bits}),
-                                     (nn.LayerNorm, InputQuantizedWrapper, {"bits": args.bits})])
-            replaced = find_quantized_layers(model, QuantizedLinear)
-            replaced.update(find_quantized_layers(model, InputQuantizedWrapper))
-            print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
-    print(model)
 
     print("Loading ImageNet validation set...")
     data_config = timm.data.resolve_data_config(model.pretrained_cfg)
@@ -102,7 +97,59 @@ def main():
         pin_memory=(device.type == "cuda"),
     )
     print(f"Validation samples: {len(val_dataset)}")
+    
+    if args.no_quantize:
+        print("Skipping quantization (baseline full precision)")
+    elif args.quant_type == "linear":
+        print(f"Quantizing nn.Linear layers to {args.bits}-bit...")
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits})])
+        replaced = find_quantized_layers(model, QuantizedLinear)
+        print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    elif args.quant_type == "all":
+        print(f"Quantizing nn.Linear, nn.Conv2d, nn.LayerNorm layers to {args.bits}-bit...")
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}), 
+                                (nn.Conv2d, InputQuantizedWrapper, {"bits": args.bits}),
+                                 (nn.LayerNorm, InputQuantizedWrapper, {"bits": args.bits})])
+        replaced = find_quantized_layers(model, QuantizedLinear)
+        replaced.update(find_quantized_layers(model, InputQuantizedWrapper))
+        print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    elif args.quant_type == "gptq":
+        print(f"Quantizing nn.Linear layers to {args.bits}-bit using GPTQ...")
+        print(f"  Calibration batches : {args.gptq_calib_batches}  "
+              f"(= {args.gptq_calib_batches * BATCH_SIZE} samples)")
+ 
+        # Step 1: replace all nn.Linear with GPTQLinear and start hooks
+        quantize_model(model, [(nn.Linear, GPTQLinear, {"bits": args.bits})])
+        gptq_layers = find_quantized_layers(model, GPTQLinear)
+        for layer in gptq_layers.values():
+            layer.start_calibration()
+ 
+        # Step 2: run calibration forward passes (no grad needed)
+        model.eval()
+        print("  Running calibration passes...")
+        with torch.no_grad():
+            for batch_idx, (images, _) in enumerate(
+                tqdm(val_loader, total=args.gptq_calib_batches, desc="Calibrating")
+            ):
+                if batch_idx >= args.gptq_calib_batches:
+                    break
+                model(images.to(device))
+ 
+        # Step 3: finalize – run the per-layer GPTQ weight update
+        print("  Running GPTQ weight updates...")
+        for name, layer in tqdm(gptq_layers.items(), desc="GPTQ optimizing"):
+            layer.finish_calibration()
+ 
+        print(f"GPTQ quantized {len(gptq_layers)} layers to {args.bits}-bit")
+ 
+    else:
+        raise ValueError(
+            f"Unknown --quant-type '{args.quant_type}'. "
+            "Choose from: linear / all / gptq"
+        )
+    print(model)
 
+    
     print("Running evaluation...")
     top1, top5 = evaluate(model, val_loader, device)
     print(f"Top-1 accuracy: {top1:.2f}%")

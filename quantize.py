@@ -98,6 +98,207 @@ class InputQuantizedWrapper(nn.Module):
         return self.module(x_q)
 
 
+class GPTQLinear(nn.Module):
+    """
+    nn.Linear replacement whose weights are optimally quantized using the
+    GPTQ (Optimal Brain Quantization) algorithm.
+ 
+    Usage
+    -----
+    1.  Create the layer:
+            layer = GPTQLinear(original_linear, bits=4)
+    2.  Feed calibration batches through the *original* model while the
+        GPTQ hook is active:
+            layer.start_calibration()
+            for x, _ in calib_loader:
+                model(x)           # forward pass accumulates H
+            layer.finish_calibration()
+    3.  Use normally at inference – weights are now GPTQ-quantized.
+ 
+    Alternatively, call GPTQLinear.gptq_quantize_model() which wraps the
+    whole replace + calibrate + finalize pipeline for you.
+    """
+ 
+    def __init__(self, original: nn.Linear, bits: int = 8, damp_pct: float = 0.01, **kwargs):
+        super().__init__()
+        assert isinstance(original, nn.Linear), "GPTQLinear expects nn.Linear"
+        self.in_features = original.in_features
+        self.out_features = original.out_features
+        self.bits = bits
+        self.damp_pct = damp_pct
+ 
+        # Quantization grid: symmetric, per-output-channel (same as Method 1)
+        maxq = 2 ** (bits - 1) - 1
+        self.register_buffer("maxq", torch.tensor(float(maxq)))
+ 
+        # Copy weight & bias; weight will be overwritten after calibration
+        self.weight = nn.Parameter(original.weight.data.clone(), requires_grad=False)
+        if original.bias is not None:
+            self.bias = nn.Parameter(original.bias.data.clone(), requires_grad=False)
+        else:
+            self.bias = None
+ 
+        # Running Hessian accumulator  H = 2 Σ xᵢ xᵢᵀ  (in_features × in_features)
+        self.register_buffer(
+            "_H", torch.zeros(self.in_features, self.in_features)
+        )
+        self._n_samples: int = 0
+        self._hook = None          # forward pre-hook handle
+        self._calibrating: bool = False
+ 
+    # ------------------------------------------------------------------
+    # Calibration helpers
+    # ------------------------------------------------------------------
+ 
+    def start_calibration(self):
+        """Register the forward pre-hook that accumulates the Hessian."""
+        self._calibrating = True
+        self._H.zero_()
+        self._n_samples = 0
+        self._hook = self.register_forward_pre_hook(self._accumulate_hessian)
+ 
+    def _accumulate_hessian(self, _module, args):
+        """Pre-hook: update H with the current input batch."""
+        x = args[0].detach()                          # (B, *, d_in)
+        x_2d = x.reshape(-1, self.in_features).float()  # (N, d_in)
+        self._H += 2.0 * x_2d.t() @ x_2d
+        self._n_samples += x_2d.shape[0]
+ 
+    def finish_calibration(self):
+        """Remove the hook and run the GPTQ weight update."""
+        if self._hook is not None:
+            self._hook.remove()
+            self._hook = None
+        self._calibrating = False
+        if self._n_samples == 0:
+            raise RuntimeError("finish_calibration called with zero calibration samples.")
+        self._run_gptq()
+        # Free the Hessian buffer — no longer needed
+        self._H.zero_()
+ 
+    # ------------------------------------------------------------------
+    # Core GPTQ algorithm
+    # ------------------------------------------------------------------
+ 
+    def _run_gptq(self):
+        """
+        Quantize self.weight in-place using the accumulated Hessian.
+ 
+        Column-wise (i.e. input-feature-wise) greedy OBQ update:
+          for each column i (sorted by diagonal of H⁻¹ for stability):
+              q[:,i] = quant(w[:,i])
+              w[:,i+1:] -= outer(w[:,i] - q[:,i], H_inv[i, i+1:] / H_inv[i,i])
+        We use the Cholesky decomposition of H⁻¹ for numerical stability
+        (as in the original GPTQ paper).
+        """
+        W = self.weight.data.float()          # (out, in)
+        H = self._H.float()
+ 
+        # 1. Dampen the Hessian to handle near-singular cases
+        damp = self.damp_pct * H.diag().mean()
+        H.diagonal().add_(damp)
+ 
+        # 2. Invert H via Cholesky  (H = LLᵀ  =>  H⁻¹ available column-wise)
+        try:
+            L = torch.linalg.cholesky(H)                   # lower triangular
+            H_inv = torch.cholesky_inverse(L)              # (in, in)
+        except torch.linalg.LinAlgError:
+            # Fallback: pseudo-inverse if Cholesky fails (degenerate Hessian)
+            H_inv = torch.linalg.pinv(H)
+ 
+        # 3. Column-wise quantization with error propagation
+        #    We process columns left-to-right (column = input dimension).
+        d_in = self.in_features
+        W_q = W.clone()
+ 
+        for i in range(d_in):
+            w_col = W_q[:, i]                              # (out,)
+ 
+            # Per-output-channel scale for this column
+            w_max = w_col.abs().amax().clamp(min=1e-8)
+            scale = w_max / self.maxq                      # scalar
+ 
+            # Quantize column i
+            q_col = (w_col / scale).round().clamp(-self.maxq - 1, self.maxq) * scale
+ 
+            # Error for this column
+            err = w_col - q_col                            # (out,)
+ 
+            # Update W_q for remaining columns using the OBQ formula:
+            #   Δw[j] = -err  *  H_inv[i, j] / H_inv[i, i]
+            if i + 1 < d_in:
+                h_ii = H_inv[i, i].clamp(min=1e-8)
+                W_q[:, i + 1:] -= torch.outer(err, H_inv[i, i + 1:] / h_ii)
+ 
+            W_q[:, i] = q_col
+ 
+        self.weight.data.copy_(W_q.to(self.weight.dtype))
+ 
+    # ------------------------------------------------------------------
+    # Inference
+    # ------------------------------------------------------------------
+ 
+    def forward(self, x):
+        # Per-token symmetric activation quantization (same as QuantizedLinear)
+        x_flat = x.reshape(-1, x.shape[-1])
+        x_max = x_flat.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+        scale_act = (x_max / self.maxq.to(x.device)).reshape(*x.shape[:-1], 1)
+        maxq = self.maxq.to(x.device)
+        q_act = torch.clamp(torch.round(x / scale_act), -(maxq + 1), maxq)
+        x_q = (scale_act * q_act).to(x.dtype)
+        # Weight is already stored quantized — no fake-quant round-trip needed
+        return F.linear(x_q, self.weight, self.bias)
+ 
+    # ------------------------------------------------------------------
+    # Convenience: replace + calibrate + finalize in one call
+    # ------------------------------------------------------------------
+ 
+    @staticmethod
+    def gptq_quantize_model(model, calib_loader, bits: int = 8,
+                             device: torch.device = None, n_calib_batches: int = 64):
+        """
+        End-to-end GPTQ quantization of all nn.Linear layers in `model`.
+ 
+        Steps:
+          1. Replace every nn.Linear with GPTQLinear (hooks inactive).
+          2. Run `n_calib_batches` forward passes — hooks accumulate H.
+          3. Call finish_calibration() on every GPTQLinear.
+ 
+        Args:
+            model:            The nn.Module to quantize (modified in-place).
+            calib_loader:     DataLoader yielding (images, labels) batches.
+            bits:             Bit-width for quantization.
+            device:           Device to run calibration on.
+            n_calib_batches:  How many batches to use for Hessian estimation.
+ 
+        Returns:
+            model (modified in-place), dict of {name: GPTQLinear} layers.
+        """
+        if device is None:
+            device = next(model.parameters()).device
+ 
+        # Step 1: replace layers
+        quantize_model(model, [(nn.Linear, GPTQLinear, {"bits": bits})])
+        gptq_layers = find_quantized_layers(model, GPTQLinear)
+ 
+        # Step 2: start hooks on all replaced layers
+        for layer in gptq_layers.values():
+            layer.start_calibration()
+ 
+        model.eval()
+        with torch.no_grad():
+            for batch_idx, (images, _) in enumerate(calib_loader):
+                if batch_idx >= n_calib_batches:
+                    break
+                model(images.to(device))
+ 
+        # Step 3: finalize (run GPTQ, remove hooks)
+        for layer in gptq_layers.values():
+            layer.finish_calibration()
+ 
+        return model, gptq_layers
+ 
+
 def quantize_model(model, replacement_list, input_quantize_list=None, name: str = ""):
     """
     Recursively replace layers according to replacement_list, and optionally
