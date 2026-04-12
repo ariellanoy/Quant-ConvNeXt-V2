@@ -159,8 +159,11 @@ class GPTQLinear(nn.Module):
  
     def _accumulate_hessian(self, _module, args):
         """Pre-hook: update H with the current input batch."""
-        x = args[0].detach()                          # (B, *, d_in)
+        x = args[0].detach()                             # (B, *, d_in)
         x_2d = x.reshape(-1, self.in_features).float()  # (N, d_in)
+        # Keep _H on the same device as the input (handles CPU → CUDA migration)
+        if self._H.device != x_2d.device:
+            self._H = self._H.to(x_2d.device)
         self._H += 2.0 * x_2d.t() @ x_2d
         self._n_samples += x_2d.shape[0]
  
