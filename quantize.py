@@ -194,8 +194,10 @@ class GPTQLinear(nn.Module):
         We use the Cholesky decomposition of H⁻¹ for numerical stability
         (as in the original GPTQ paper).
         """
+        dev = self.weight.device
         W = self.weight.data.float()          # (out, in)
-        H = self._H.float()
+        H = self._H.to(dev).float()
+        self.maxq = self.maxq.to(dev)
  
         # 1. Dampen the Hessian to handle near-singular cases
         damp = self.damp_pct * H.diag().mean()
@@ -236,7 +238,7 @@ class GPTQLinear(nn.Module):
             W_q[:, i] = q_col
  
         self.weight.data.copy_(W_q.to(self.weight.dtype))
- 
+        
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
