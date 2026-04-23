@@ -304,6 +304,66 @@ class GPTQLinear(nn.Module):
         return model, gptq_layers
  
 
+class QuantizedConv2d(nn.Module):
+    """
+    Symmetric quantization for Conv2d module.
+    """
+
+    def __init__(self, original: nn.Conv2d, bits: int = 8, **kwargs):
+        super().__init__()
+        assert isinstance(original, nn.Conv2d), "QuantizedConv2d expects nn.Conv2d"
+        # copy convolution characteristics
+        self.in_channels = original.in_channels
+        self.out_channels = original.out_channels
+        self.kernel_size = original.kernel_size
+        self.stride = original.stride
+        self.padding = original.padding
+        self.dilation = original.dilation
+        self.groups = original.groups
+        # bits to quantize to
+        self.bits = bits
+        # copy weights and bias for the original module
+        self.weight = nn.Parameter(original.weight.data.clone())
+        self.bias = nn.Parameter(original.bias.data.clone()) if original.bias is not None else None
+        # quantization parameters (2^(b-1)-1, and save it to internal variable 'buffer').
+        maxq = 2 ** (bits - 1) - 1
+        self.register_buffer("maxq", torch.tensor(maxq, dtype=torch.float32))
+        # compute scale factor
+        self._compute_scales()
+
+    def _compute_scales(self):
+        """Compute per-channel symmetric quantization scales from the weight."""
+        w = self.weight.data
+        # Per-output-channel: shape (out_features,)
+        w_flat = w.reshape(w.shape[0], -1)
+        w_max = w_flat.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
+        scale = w_max / self.maxq
+        self.register_buffer("scale", scale.reshape(-1, *([1] * (w.dim() - 1))))
+
+    def _fake_quant_weight(self):
+        """Quantize and dequantize the weight (fake quantization)."""
+        w = self.weight
+        dev = w.device
+        scale = self.scale.to(dev)
+        maxq = self.maxq.to(dev)
+        q = torch.clamp(torch.round(w / scale), -(maxq + 1), maxq)
+        return (scale * q).to(w.dtype)
+
+    def forward(self, x):
+        # 1. Online per-token activation scale
+        x_max = x.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
+        scale_act = x_max / self.maxq.to(x.device)
+
+        # 2. Fake-quantize activation
+        maxq = self.maxq.to(x.device)
+        q_act = torch.clamp(torch.round(x / scale_act), -(maxq + 1), maxq)
+        x_q = (scale_act * q_act).to(x.dtype)
+
+        # 3. Fake-quantize weight and compute output
+        w_q = self._fake_quant_weight()
+        return F.conv2d(x_q, w_q, self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
+
+
 def quantize_model(model, replacement_list, input_quantize_list=None, name: str = ""):
     """
     Recursively replace layers according to replacement_list, and optionally
