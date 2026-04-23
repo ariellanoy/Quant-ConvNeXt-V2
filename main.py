@@ -10,6 +10,7 @@ from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
 from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers,  GPTQLinear, QuantizedConv2d
+from models.convnext_v2 import LayerNorm2d
 
 BATCH_SIZE = 64
 NUM_WORKERS = 4
@@ -35,7 +36,6 @@ def evaluate(model, dataloader, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Quantize ViT-B/16 and evaluate on ImageNet")
-    formatter_class = argparse.RawTextHelpFormatter     # for \n printing
     parser.add_argument(
         "imagenet_dir",
         type=str,
@@ -64,13 +64,13 @@ def main():
         default="linear",
         help=(
             "Type of quantization to run\n"
-            "  linear     – symmetric per-channel weight + per-token activation (nn.Linear only)\n"
-            "  conv2d     – symmetric per-channel weight + per-token activation (nn.Conv2d only)\n" 
-            "  absmax     – symmetric per-channel weight + per-token activation (nn.Linear and nn.Conv2d)\n" 
-            "  asymm      – symmetric quantizaion for weights, asymmetric quantization for inputs (nn.Linear and nn.Conv2d)\n"
-            "  all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
-            "  gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
-            "  layernorm  – wrap LayerNorm with symmetric wrapper"
+            "* linear     – symmetric per-channel weight + per-token activation (nn.Linear only)\n"
+            "* conv2d     – symmetric per-channel weight + per-token activation (nn.Conv2d only)\n" 
+            "* absmax     – symmetric per-channel weight + per-token activation (nn.Linear and nn.Conv2d)\n" 
+            "* asymm      – symmetric quantizaion for weights, asymmetric quantization for inputs (nn.Linear and nn.Conv2d)\n"
+            "* all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
+            "* gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
+            "* layernorm  – wrap LayerNorm with symmetric wrapper"
             "(default: linear)"
         ),
     )
@@ -174,7 +174,7 @@ def main():
     # wrap LayerNorm with symmetric wrapper
     elif args.quant_type == "layernorm":
         print(f"Wrapping nn.LayerNorm2d layers to {args.bits}-bit...")
-        quantize_model(model, [], [(nn.LayerNorm2d, {"bits": args.bits})])
+        quantize_model(model, [], [(LayerNorm2d, {"bits": args.bits})])
         replaced = find_quantized_layers(model, InputQuantizedWrapper)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     else:
