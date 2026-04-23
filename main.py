@@ -10,7 +10,8 @@ from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
 from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers,  GPTQLinear, QuantizedConv2d
-#from models.convnext_v2 import LayerNorm2d
+from timm.layers import LayerNorm2d
+
 
 BATCH_SIZE = 64
 NUM_WORKERS = 4
@@ -174,7 +175,7 @@ def main():
     # wrap LayerNorm with symmetric wrapper
     elif args.quant_type == "layernorm":
         print(f"Wrapping nn.LayerNorm2d layers to {args.bits}-bit...")
-        quantize_model(model, [], [(nn.LayerNorm, {"bits": args.bits})])
+        quantize_model(model, [], [(LayerNorm2d, {"bits": args.bits})])
         replaced = find_quantized_layers(model, InputQuantizedWrapper)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     else:
