@@ -10,7 +10,7 @@ from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
 from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers,  GPTQLinear, QuantizedConv2d
-from models.convnext_v2 import LayerNorm2d
+#from models.convnext_v2 import LayerNorm2d
 
 BATCH_SIZE = 64
 NUM_WORKERS = 4
