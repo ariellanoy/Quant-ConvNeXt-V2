@@ -23,12 +23,18 @@ class QuantizedLinear(nn.Module):
     of activations with online scale.
     """
 
-    def __init__(self, original: nn.Linear, bits: int = 8, **kwargs):
+    def __init__(self, original: nn.Linear, bits: int = 8, asymmetric_acts: bool = False, **kwargs):
+        """
+        :param bits: number of bits to quantize to
+        :param asymmetric_acts: False - symmetric (absmax) qaunt for both weights and inputs
+                                True - symmetric (absmax) quant for the weights, asymmetric (zeropoint) quant for the inputs.
+        """
         super().__init__()
         assert isinstance(original, nn.Linear), "QuantizedLinear expects nn.Linear"
         self.in_features = original.in_features
         self.out_features = original.out_features
         self.bits = bits
+        self.asymmetric_acts = asymmetric_acts
         self.weight = nn.Parameter(original.weight.data.clone())
         self.bias = nn.Parameter(original.bias.data.clone()) if original.bias is not None else None
         maxq = 2 ** (bits - 1) - 1
@@ -54,16 +60,31 @@ class QuantizedLinear(nn.Module):
         return (scale * q).to(w.dtype)
 
     def forward(self, x):
-        # 1. Online per-token activation scale
-        x_flat = x.reshape(-1, x.shape[-1])  # (B*N, D) or (B, D)
-        x_max = x_flat.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
-        scale_act = x_max / self.maxq.to(x.device)
-        scale_act = scale_act.reshape(*x.shape[:-1], 1)  # (B, N, 1) or (B, 1)
-
-        # 2. Fake-quantize activation
-        maxq = self.maxq.to(x.device)
-        q_act = torch.clamp(torch.round(x / scale_act), -(maxq + 1), maxq)
-        x_q = (scale_act * q_act).to(x.dtype)
+        # check quantization type for inputs (symmetric \ asymmetric)
+        if self.asymmetric_acts:
+            # quant range parameters
+            maxq = self.maxq.to(x.device)
+            qmin = -(maxq + 1)
+            q_range = (2 * maxq) + 1
+            x_min = x.amin(dim=-1, keepdim=True)
+            x_max = x.amax(dim=-1, keepdim=True)
+            x_max = torch.max(x_max, x_min + 1e-8)  # for the case x_min = x_max
+            # calculate scale parameter and zeropoint
+            scale_act = (x_max - x_min) / q_range
+            z_act = torch.round(-x_min / scale_act) + qmin
+            # the quantization
+            q_act = torch.clamp(torch.round(x / scale_act + z_act), qmin, maxq)
+            x_q = ((q_act - z_act) * scale_act).to(x.dtype)
+        else:
+            # 1. Online per-token activation scale
+            x_flat = x.reshape(-1, x.shape[-1])  # (B*N, D) or (B, D)
+            x_max = x_flat.abs().amax(dim=-1, keepdim=True).clamp(min=1e-8)
+            scale_act = x_max / self.maxq.to(x.device)
+            scale_act = scale_act.reshape(*x.shape[:-1], 1)  # (B, N, 1) or (B, 1)
+            # 2. Fake-quantize activation
+            maxq = self.maxq.to(x.device)
+            q_act = torch.clamp(torch.round(x / scale_act), -(maxq + 1), maxq)
+            x_q = (scale_act * q_act).to(x.dtype)
 
         # 3. Fake-quantize weight and compute output
         w_q = self._fake_quant_weight()
@@ -309,7 +330,12 @@ class QuantizedConv2d(nn.Module):
     Symmetric quantization for Conv2d module.
     """
 
-    def __init__(self, original: nn.Conv2d, bits: int = 8, **kwargs):
+    def __init__(self, original: nn.Conv2d, bits: int = 8,  asymmetric_acts: bool = False, **kwargs):
+        """
+        :param bits: number of bits to quantize to
+        :param asymmetric_acts: False - symmetric (absmax) qaunt for both weights and inputs
+                                True - symmetric (absmax) quant for the weights, asymmetric (zeropoint) quant for the inputs.
+        """
         super().__init__()
         assert isinstance(original, nn.Conv2d), "QuantizedConv2d expects nn.Conv2d"
         # copy convolution characteristics
@@ -320,8 +346,9 @@ class QuantizedConv2d(nn.Module):
         self.padding = original.padding
         self.dilation = original.dilation
         self.groups = original.groups
-        # bits to quantize to
+        # quantization definitions
         self.bits = bits
+        self.asymmetric_acts = asymmetric_acts
         # copy weights and bias for the original module
         self.weight = nn.Parameter(original.weight.data.clone())
         self.bias = nn.Parameter(original.bias.data.clone()) if original.bias is not None else None
@@ -350,16 +377,31 @@ class QuantizedConv2d(nn.Module):
         return (scale * q).to(w.dtype)
 
     def forward(self, x):
-        # 1. Online per-token activation scale
-        x_max = x.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
-        scale_act = x_max / self.maxq.to(x.device)
+        # check quantization type for inputs (symmetric \ asymmetric)
+        if self.asymmetric_acts:
+            # quant range parameters
+            maxq = self.maxq.to(x.device)
+            qmin = -(maxq + 1)
+            q_range = (2 * maxq) + 1
+            x_min = x.amin(dim=1, keepdim=True)
+            x_max = x.amax(dim=1, keepdim=True)
+            x_max = torch.max(x_max, x_min + 1e-8) # for the case x_min = x_max
+            # calculate scale parameter and zeropoint
+            scale_act = (x_max - x_min) / q_range
+            z_act = torch.round(-x_min / scale_act) + qmin
+            # the quantization
+            q_act = torch.clamp(torch.round(x / scale_act + z_act), qmin, maxq)
+            x_q = ((q_act - z_act) * scale_act).to(x.dtype)
+        else:
+            # 1. Online per-token activation scale
+            x_max = x.abs().amax(dim=1, keepdim=True).clamp(min=1e-8)
+            scale_act = x_max / self.maxq.to(x.device)
+            # 2. Fake-quantize (symmetric) activation
+            maxq = self.maxq.to(x.device)
+            q_act = torch.clamp(torch.round(x / scale_act), -(maxq + 1), maxq)
+            x_q = (scale_act * q_act).to(x.dtype)
 
-        # 2. Fake-quantize activation
-        maxq = self.maxq.to(x.device)
-        q_act = torch.clamp(torch.round(x / scale_act), -(maxq + 1), maxq)
-        x_q = (scale_act * q_act).to(x.dtype)
-
-        # 3. Fake-quantize weight and compute output
+        # 3. Fake-quantize (symmetric) weight and compute output
         w_q = self._fake_quant_weight()
         return F.conv2d(x_q, w_q, self.bias, stride=self.stride, padding=self.padding, dilation=self.dilation, groups=self.groups)
 

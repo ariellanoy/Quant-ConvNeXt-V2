@@ -35,6 +35,7 @@ def evaluate(model, dataloader, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Quantize ViT-B/16 and evaluate on ImageNet")
+    formatter_class = argparse.RawTextHelpFormatter     # for \n printing
     parser.add_argument(
         "imagenet_dir",
         type=str,
@@ -65,9 +66,11 @@ def main():
             "Type of quantization to run\n"
             "  linear     – symmetric per-channel weight + per-token activation (nn.Linear only)\n"
             "  conv2d     – symmetric per-channel weight + per-token activation (nn.Conv2d only)\n" 
-            "  absmax     – symmetric per-channel weight + per-token activation (nn.Linear and nn.Conv2d)\n"  
+            "  absmax     – symmetric per-channel weight + per-token activation (nn.Linear and nn.Conv2d)\n" 
+            "  asymm      – symmetric quantizaion for weights, asymmetric quantization for inputs (nn.Linear and nn.Conv2d)\n"
             "  all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
             "  gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
+            "  layernorm  – wrap LayerNorm with symmetric wrapper"
             "(default: linear)"
         ),
     )
@@ -122,6 +125,14 @@ def main():
         replaced = find_quantized_layers(model, QuantizedLinear)
         replaced.update(find_quantized_layers(model, QuantizedConv2d))
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    # symmetric quantization for weights, asymmetric quantizaion for inputs
+    elif args.quant_type == "asymm":
+        print(f"Quantizing nn.Linear, nn.Conv2d layers to {args.bits}-bit...")
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits, "asymmetric_acts": True}),
+                               (nn.Conv2d, QuantizedConv2d, {"bits": args.bits, "asymmetric_acts": True}), ])
+        replaced = find_quantized_layers(model, QuantizedLinear)
+        replaced.update(find_quantized_layers(model, QuantizedConv2d))
+        print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     # symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm todo ?
     elif args.quant_type == "all":
         print(f"Quantizing nn.Linear, nn.Conv2d, nn.LayerNorm layers to {args.bits}-bit...")
@@ -131,6 +142,7 @@ def main():
         replaced = find_quantized_layers(model, QuantizedLinear)
         replaced.update(find_quantized_layers(model, InputQuantizedWrapper))
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    # GPTQ Hessian-guided quantization of nn.Linear layers
     elif args.quant_type == "gptq":
         print(f"Quantizing nn.Linear layers to {args.bits}-bit using GPTQ...")
         print(f"  Calibration batches : {args.gptq_calib_batches}  "
@@ -159,7 +171,12 @@ def main():
             layer.finish_calibration()
  
         print(f"GPTQ quantized {len(gptq_layers)} layers to {args.bits}-bit")
- 
+    # wrap LayerNorm with symmetric wrapper
+    elif args.quant_type == "layernorm":
+        print(f"Wrapping nn.LayerNorm2d layers to {args.bits}-bit...")
+        quantize_model(model, [], [(nn.LayerNorm2d, {"bits": args.bits})])
+        replaced = find_quantized_layers(model, InputQuantizedWrapper)
+        print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     else:
         raise ValueError(
             f"Unknown --quant-type '{args.quant_type}'. "
