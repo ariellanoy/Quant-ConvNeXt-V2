@@ -174,7 +174,7 @@ def main():
     # wrap LayerNorm with symmetric wrapper
     elif args.quant_type == "layernorm":
         print(f"Wrapping nn.LayerNorm2d layers to {args.bits}-bit...")
-        quantize_model(model, [], [(LayerNorm2d, {"bits": args.bits})])
+        quantize_model(model, [], [(nn.LayerNorm, {"bits": args.bits})])
         replaced = find_quantized_layers(model, InputQuantizedWrapper)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     else:
