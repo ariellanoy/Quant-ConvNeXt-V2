@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
 from tqdm import tqdm
 
-from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers,  GPTQLinear
+from quantize import load_pretrained_vit, quantize_model, QuantizedLinear, InputQuantizedWrapper, find_quantized_layers,  GPTQLinear, QuantizedConv2d
 
 BATCH_SIZE = 64
 NUM_WORKERS = 4
@@ -64,6 +64,8 @@ def main():
         help=(
             "Type of quantization to run\n"
             "  linear     – symmetric per-channel weight + per-token activation (nn.Linear only)\n"
+            "  conv2d     – symmetric per-channel weight + per-token activation (nn.Conv2d only)\n" 
+            "  absmax     – symmetric per-channel weight + per-token activation (nn.Linear and nn.Conv2d)\n"  
             "  all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
             "  gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
             "(default: linear)"
@@ -100,11 +102,27 @@ def main():
     
     if args.no_quantize:
         print("Skipping quantization (baseline full precision)")
+    # symmetric quant to linear
     elif args.quant_type == "linear":
         print(f"Quantizing nn.Linear layers to {args.bits}-bit...")
         quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits})])
         replaced = find_quantized_layers(model, QuantizedLinear)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    # symmetric quant to conv2d
+    elif args.quant_type == "conv2d":
+        print(f"Quantizing nn.Conv2d layers to {args.bits}-bit...")
+        quantize_model(model, [(nn.Conv2d, QuantizedConv2d, {"bits": args.bits})])
+        replaced = find_quantized_layers(model, QuantizedConv2d)
+        print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    # symmetric quant to linear & conv2d
+    elif args.quant_type == "absmax":
+        print(f"Quantizing nn.Linear, nn.Conv2d layers to {args.bits}-bit...")
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}),
+                               (nn.Conv2d, QuantizedConv2d, {"bits": args.bits}),])
+        replaced = find_quantized_layers(model, QuantizedLinear)
+        replaced.update(find_quantized_layers(model, QuantizedConv2d))
+        print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
+    # symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm todo ?
     elif args.quant_type == "all":
         print(f"Quantizing nn.Linear, nn.Conv2d, nn.LayerNorm layers to {args.bits}-bit...")
         quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}), 
