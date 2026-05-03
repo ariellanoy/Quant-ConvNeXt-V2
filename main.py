@@ -110,37 +110,37 @@ def main():
     # symmetric quant to linear
     elif args.quant_type == "linear":
         print(f"Quantizing nn.Linear layers to {args.bits}-bit...")
-        quantize_model(model, [], input_quantize_list=[(nn.Linear, QuantizedLinear, {"bits": args.bits})])
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits})])
         replaced = find_quantized_layers(model, QuantizedLinear)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     # symmetric quant to conv2d
     elif args.quant_type == "conv2d":
         print(f"Quantizing nn.Conv2d layers to {args.bits}-bit...")
-        quantize_model(model,  [], input_quantize_list=[(nn.Conv2d, QuantizedConv2d, {"bits": args.bits})])
+        quantize_model(model, [(nn.Conv2d, QuantizedConv2d, {"bits": args.bits})])
         replaced = find_quantized_layers(model, QuantizedConv2d)
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     # symmetric quant to linear & conv2d
     elif args.quant_type == "absmax":
         print(f"Quantizing nn.Linear, nn.Conv2d layers to {args.bits}-bit...")
-        quantize_model(model,  [], input_quantize_list=[(nn.Linear, QuantizedLinear, {"bits": args.bits}),
-                               (nn.Conv2d, QuantizedConv2d, {"bits": args.bits}),])
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}),
+                       (nn.Conv2d, QuantizedConv2d, {"bits": args.bits})])
         replaced = find_quantized_layers(model, QuantizedLinear)
         replaced.update(find_quantized_layers(model, QuantizedConv2d))
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     # symmetric quantization for weights, asymmetric quantizaion for inputs
     elif args.quant_type == "asymm":
         print(f"Quantizing nn.Linear, nn.Conv2d layers to {args.bits}-bit...")
-        quantize_model(model,  [], input_quantize_list=[(nn.Linear, QuantizedLinear, {"bits": args.bits, "asymmetric_acts": True}),
-                               (nn.Conv2d, QuantizedConv2d, {"bits": args.bits, "asymmetric_acts": True}), ])
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits, "asymmetric_acts": True}),
+                       (nn.Conv2d, QuantizedConv2d, {"bits": args.bits, "asymmetric_acts": True})])
         replaced = find_quantized_layers(model, QuantizedLinear)
         replaced.update(find_quantized_layers(model, QuantizedConv2d))
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
     # symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm todo ?
     elif args.quant_type == "all":
         print(f"Quantizing nn.Linear, nn.Conv2d, nn.LayerNorm layers to {args.bits}-bit...")
-        quantize_model(model,  [], input_quantize_list=[(nn.Linear, QuantizedLinear, {"bits": args.bits}), 
-                                (nn.Conv2d, InputQuantizedWrapper, {"bits": args.bits}),
-                                 (nn.LayerNorm, InputQuantizedWrapper, {"bits": args.bits})])
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits}),
+                       (nn.Conv2d, InputQuantizedWrapper, {"bits": args.bits}),
+                       (nn.LayerNorm, InputQuantizedWrapper, {"bits": args.bits})])
         replaced = find_quantized_layers(model, QuantizedLinear)
         replaced.update(find_quantized_layers(model, InputQuantizedWrapper))
         print(f"Quantized {len(replaced)} layers to {args.bits}-bit")
@@ -151,7 +151,7 @@ def main():
               f"(= {args.gptq_calib_batches * BATCH_SIZE} samples)")
  
         # Step 1: replace all nn.Linear with GPTQLinear and start hooks
-        quantize_model(model,  [], input_quantize_list=[(nn.Linear, GPTQLinear, {"bits": args.bits})])
+        quantize_model(model, [(nn.Linear, GPTQLinear, {"bits": args.bits})])
         gptq_layers = find_quantized_layers(model, GPTQLinear)
         for layer in gptq_layers.values():
             layer.start_calibration()
