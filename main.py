@@ -73,6 +73,7 @@ def main():
             "* asymm      – symmetric quantizaion for weights, asymmetric quantization for inputs (nn.Linear and nn.Conv2d)\n"
             "* all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
             "* gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
+            "* depthwise_gptq – depthwise nn.Conv2d quantization + GPTQ for nn.Linear\n"
             "* layernorm  – wrap LayerNorm with symmetric wrapper"
             "(default: linear)"
         ),
@@ -212,11 +213,46 @@ def main():
             for i, name in enumerate(replaced_lin.keys()):
                 if i >= 10: break
                 print(f"  {name}")
+        elif args.quant_type == "depthwise_gptq":
+        print(f"Quantizing depthwise nn.Conv2d to {args.bits}-bit and nn.Linear with GPTQ...")
+        # Step 1: quantize only depthwise Conv2d layers
+        quantize_depthwise_conv2d(model, bits=args.bits, asymmetric_acts=False)
+        replaced_conv = find_quantized_layers(model, QuantizedConv2d)
+        print(f"Quantized {len(replaced_conv)} depthwise conv layers to {args.bits}-bit")
+        # Step 2: replace all nn.Linear with GPTQLinear
+        print(f"Applying GPTQ to nn.Linear layers with {args.gptq_calib_batches} calibration batches...")
+        quantize_model(model, [(nn.Linear, GPTQLinear, {"bits": args.bits})])
+        gptq_layers = find_quantized_layers(model, GPTQLinear)
+        for layer in gptq_layers.values():
+            layer.start_calibration()
+        # Step 3: calibration forward passes
+        model.eval()
+        print("Running GPTQ calibration passes...")
+        with torch.no_grad():
+            for batch_idx, (images, _) in enumerate(
+                tqdm(val_loader, total=args.gptq_calib_batches, desc="Calibrating")):
+                if batch_idx >= args.gptq_calib_batches: break
+                model(images.to(device))
+        # Step 4: finalize GPTQ
+        print("Running GPTQ weight updates...")
+        for name, layer in tqdm(gptq_layers.items(), desc="GPTQ optimizing"):
+            layer.finish_calibration()
+        print(f"GPTQ quantized {len(gptq_layers)} linear layers to {args.bits}-bit")
+        if len(replaced_conv) > 0:
+            print("First few quantized depthwise conv layers:")
+            for i, name in enumerate(replaced_conv.keys()):
+                if i >= 10: break
+                print(f"  {name}")
+        if len(gptq_layers) > 0:
+            print("First few GPTQ linear layers:")
+            for i, name in enumerate(gptq_layers.keys()):
+                if i >= 10: break
+                print(f"  {name}")
+    
     else:
         raise ValueError(
             f"Unknown --quant-type '{args.quant_type}'. "
-            "Choose from: linear / conv2d / depthwise / depthwise_linear / absmax / asymm / all / gptq / layernorm"
-        )
+            "Choose from: linear / conv2d / depthwise / depthwise_linear / depthwise_gptq / absmax / asymm / all / gptq / layernorm"        )
     print(model)
 
     
