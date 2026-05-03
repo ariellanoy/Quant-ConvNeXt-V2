@@ -68,6 +68,7 @@ def main():
             "* linear     – symmetric per-channel weight + per-token activation (nn.Linear only)\n"
             "* conv2d     – symmetric per-channel weight + per-token activation (nn.Conv2d only)\n" 
             "* depthwise  – symmetric per-channel weight + per-token activation (depthwise nn.Conv2d only)\n"
+            "* depthwise_linear – depthwise nn.Conv2d + nn.Linear quantization\n"
             "* absmax     – symmetric per-channel weight + per-token activation (nn.Linear and nn.Conv2d)\n" 
             "* asymm      – symmetric quantizaion for weights, asymmetric quantization for inputs (nn.Linear and nn.Conv2d)\n"
             "* all        – symmetric quantization of nn.Linear, nn.Conv2d, nn.LayerNorm\n"
@@ -190,10 +191,31 @@ def main():
             for i, name in enumerate(replaced.keys()):
                 if i >= 10: break
                 print(f"  {name}")
+        
+    elif args.quant_type == "depthwise_linear":
+        print(f"Quantizing depthwise nn.Conv2d + nn.Linear layers to {args.bits}-bit...")
+        # Step 1: quantize only depthwise Conv2d layers
+        quantize_depthwise_conv2d(model, bits=args.bits, asymmetric_acts=False)
+        # Step 2: quantize all Linear layers
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits})])
+        replaced_conv = find_quantized_layers(model, QuantizedConv2d)
+        replaced_lin = find_quantized_layers(model, QuantizedLinear)
+        print(f"Quantized {len(replaced_conv)} depthwise conv layers to {args.bits}-bit")
+        print(f"Quantized {len(replaced_lin)} linear layers to {args.bits}-bit")
+        if len(replaced_conv) > 0:
+            print("First few quantized depthwise conv layers:")
+            for i, name in enumerate(replaced_conv.keys()):
+                if i >= 10: break
+                print(f"  {name}")
+        if len(replaced_lin) > 0:
+            print("First few quantized linear layers:")
+            for i, name in enumerate(replaced_lin.keys()):
+                if i >= 10: break
+                print(f"  {name}")
     else:
         raise ValueError(
             f"Unknown --quant-type '{args.quant_type}'. "
-            "Choose from: linear / all / gptq"
+            "Choose from: linear / conv2d / depthwise / depthwise_linear / absmax / asymm / all / gptq / layernorm"
         )
     print(model)
 
