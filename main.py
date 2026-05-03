@@ -213,7 +213,7 @@ def main():
             for i, name in enumerate(replaced_lin.keys()):
                 if i >= 10: break
                 print(f"  {name}")
-        elif args.quant_type == "depthwise_gptq":
+    elif args.quant_type == "depthwise_gptq":
         print(f"Quantizing depthwise nn.Conv2d to {args.bits}-bit and nn.Linear with GPTQ...")
         # Step 1: quantize only depthwise Conv2d layers
         quantize_depthwise_conv2d(model, bits=args.bits, asymmetric_acts=False)
