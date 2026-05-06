@@ -75,6 +75,7 @@ def main():
             "* gptq       – GPTQ Hessian-guided quantization of nn.Linear layers\n"
             "* depthwise_gptq – depthwise nn.Conv2d quantization + GPTQ for nn.Linear\n"
             "* layernorm  – wrap LayerNorm with symmetric wrapper"
+            "* linear_layernorm – nn.Linear quantization + LayerNorm2d input wrapping\n"
             "(default: linear)"
         ),
     )
@@ -248,11 +249,29 @@ def main():
             for i, name in enumerate(gptq_layers.keys()):
                 if i >= 10: break
                 print(f"  {name}")
-    
+    elif args.quant_type == "linear_layernorm":
+        print(f"Quantizing nn.Linear layers and wrapping LayerNorm2d inputs to {args.bits}-bit...")
+        # Quantize all Linear layers
+        quantize_model(model, [(nn.Linear, QuantizedLinear, {"bits": args.bits})], [(LayerNorm2d, {"bits": args.bits})])
+        replaced_lin = find_quantized_layers(model, QuantizedLinear)
+        replaced_ln = find_quantized_layers(model, InputQuantizedWrapper)
+        print(f"Quantized {len(replaced_lin)} linear layers to {args.bits}-bit")
+        print(f"Wrapped {len(replaced_ln)} LayerNorm2d layers")
+        if len(replaced_lin) > 0:
+            print("First few quantized linear layers:")
+            for i, name in enumerate(replaced_lin.keys()):
+                if i >= 10:  break
+                print(f"  {name}")
+        if len(replaced_ln) > 0:
+            print("First few wrapped LayerNorm2d layers:")
+            for i, name in enumerate(replaced_ln.keys()):
+                if i >= 10:  break
+                print(f"  {name}")
+
     else:
         raise ValueError(
             f"Unknown --quant-type '{args.quant_type}'. "
-            "Choose from: linear / conv2d / depthwise / depthwise_linear / depthwise_gptq / absmax / asymm / all / gptq / layernorm"        )
+            "Choose from: linear / conv2d / depthwise / depthwise_linear / depthwise_gptq / absmax / asymm / all / gptq / layernorm / linear_layernorm"    )
     print(model)
 
     
